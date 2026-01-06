@@ -30,6 +30,7 @@ function App() {
   const [account, setAccount] = useState(null)
   const [chainId, setChainId] = useState(null)
   const [isCorrectChain, setIsCorrectChain] = useState(false)
+  const [userDisconnected, setUserDisconnected] = useState(false)
   const [activeTab, setActiveTab] = useState('deposit')
 
   const [depositToken, setDepositToken] = useState('native')
@@ -77,49 +78,69 @@ function App() {
     }
   }
 
+  const refreshConnection = async (ethProvider, showStatus = true) => {
+    const browserProvider = new ethers.BrowserProvider(ethProvider, 'any')
+    const signerInstance = await browserProvider.getSigner()
+    const address = await signerInstance.getAddress()
+    const network = await browserProvider.getNetwork()
+    const currentChainId = network.chainId.toString()
+
+    setProvider(browserProvider)
+    setSigner(signerInstance)
+    setAccount(address)
+    setChainId(currentChainId)
+    await checkAndSwitchChain(currentChainId)
+    if (showStatus) {
+      setStatus({ type: 'success', message: `Connected to ${BASE_CHAIN_NAME}` })
+    }
+  }
+
   useEffect(() => {
+    if (userDisconnected) return
+
     if (window.ethereum) {
-      window.ethereum.on('accountsChanged', handleAccountsChanged)
-      window.ethereum.on('chainChanged', handleChainChanged)
-      
+      window.ethereum.on('accountsChanged', handleInjectedAccountsChanged)
+      window.ethereum.on('chainChanged', handleInjectedChainChanged)
+
       const checkInitialChain = async () => {
         try {
-          const provider = new ethers.BrowserProvider(window.ethereum)
-          const network = await provider.getNetwork()
-          const currentChainId = network.chainId.toString()
-          setChainId(currentChainId)
-          await checkAndSwitchChain(currentChainId)
+          const accounts = await window.ethereum.request({ method: 'eth_accounts' })
+          if (accounts.length > 0 && !account && !userDisconnected) {
+            await refreshConnection(window.ethereum, false)
+          }
         } catch (error) {}
       }
       checkInitialChain()
     }
     return () => {
       if (window.ethereum) {
-        window.ethereum.removeListener('accountsChanged', handleAccountsChanged)
-        window.ethereum.removeListener('chainChanged', handleChainChanged)
+        window.ethereum.removeListener('accountsChanged', handleInjectedAccountsChanged)
+        window.ethereum.removeListener('chainChanged', handleInjectedChainChanged)
       }
     }
-  }, [account])
+  }, [account, userDisconnected])
 
-  const handleAccountsChanged = (accounts) => {
+  const handleInjectedAccountsChanged = (accounts) => {
+    if (userDisconnected) return
     if (accounts.length === 0) {
       setAccount(null)
       setSigner(null)
     } else {
-      connectWallet()
+      refreshConnection(window.ethereum).catch(() => {})
     }
   }
 
-  const handleChainChanged = (chainIdHex) => {
+  const handleInjectedChainChanged = (chainIdHex) => {
     const newChainId = parseInt(chainIdHex, 16).toString()
     setChainId(newChainId)
     checkAndSwitchChain(newChainId)
   }
 
+
   const switchToBase = async () => {
     try {
       if (!window.ethereum) {
-        setStatus({ type: 'error', message: 'Please install MetaMask!' })
+        setStatus({ type: 'error', message: 'No wallet provider found. Please connect a wallet first.' })
         return false
       }
       await window.ethereum.request({
@@ -149,35 +170,29 @@ function App() {
   const connectWallet = async () => {
     try {
       if (!window.ethereum) {
-        setStatus({ type: 'error', message: 'Please install MetaMask!' })
+        setStatus({ type: 'error', message: 'Please install MetaMask or another Web3 wallet extension.' })
         return
       }
-      const provider = new ethers.BrowserProvider(window.ethereum)
-      const accounts = await provider.send('eth_requestAccounts', [])
-      const signer = await provider.getSigner()
-      const network = await provider.getNetwork()
-      const currentChainId = network.chainId.toString()
-
-      setProvider(provider)
-      setSigner(signer)
-      setAccount(accounts[0])
-      setChainId(currentChainId)
-
-      if (currentChainId === BASE_CHAIN_ID) {
-        setIsCorrectChain(true)
-        setStatus({ type: 'success', message: `Connected to ${BASE_CHAIN_NAME}!` })
-      } else {
-        setIsCorrectChain(false)
-        const switched = await switchToBase()
-        if (switched) {
-          window.location.reload()
-        } else {
-          setStatus({ type: 'error', message: `Please switch to ${BASE_CHAIN_NAME}` })
-        }
-      }
+      setUserDisconnected(false)
+      await window.ethereum.request({ method: 'eth_requestAccounts' })
+      await refreshConnection(window.ethereum)
     } catch (error) {
-      setStatus({ type: 'error', message: `Connection failed: ${error.message}` })
+      if (error.code === 4001) {
+        setStatus({ type: 'error', message: 'Connection rejected by user' })
+      } else {
+        setStatus({ type: 'error', message: `Connection failed: ${error.message}` })
+      }
     }
+  }
+
+  const disconnect = async () => {
+    setUserDisconnected(true)
+    setAccount(null)
+    setSigner(null)
+    setProvider(null)
+    setChainId(null)
+    setIsCorrectChain(false)
+    setStatus({ type: 'info', message: 'Disconnected from wallet' })
   }
 
   const deployAllocator = async () => {
@@ -424,32 +439,41 @@ function App() {
             These locks can be used to create conditional claims, allowing secure token transfers with allocator approval.</p>
             <h4>Getting Started:</h4>
             <ol>
-              <li>Connect your wallet (MetaMask required)</li>
+              <li>Connect your wallet using the buttons below</li>
               <li>Switch to Base Mainnet if prompted</li>
               <li>Deploy or register an allocator (optional for testing)</li>
               <li>Deposit assets to create a resource lock</li>
               <li>Withdraw or claim your assets</li>
             </ol>
           </div>
-          <button className="connect-btn" onClick={connectWallet}>Connect Wallet</button>
+          <div className="connect-actions">
+            <button className="connect-btn" onClick={connectWallet}>Connect Wallet</button>
+          </div>
           {status.message && <div className={`status ${status.type}`}>{status.message}</div>}
         </div>
       ) : (
         <div className="main-content">
           <div className="wallet-card">
-            <div className="wallet-info">
-              <span className="label">Wallet:</span>
-              <span className="value">{account.slice(0, 6)}...{account.slice(-4)}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                <div className="wallet-info">
+                  <span className="label">Wallet:</span>
+                  <span className="value">{account?.slice(0, 6)}...{account?.slice(-4)}</span>
+                </div>
+                <div className="wallet-info">
+                  <span className="label">Network:</span>
+                  <span className={`value ${isCorrectChain ? 'success' : 'error'}`}>
+                    {isCorrectChain ? BASE_CHAIN_NAME : `Wrong Network (${chainId})`}
+                  </span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {!isCorrectChain && (
+                  <button className="switch-btn" onClick={switchToBase}>Switch to Base</button>
+                )}
+                <button className="switch-btn" onClick={disconnect} style={{ background: '#7f1d1d' }}>Disconnect</button>
+              </div>
             </div>
-            <div className="wallet-info">
-              <span className="label">Network:</span>
-              <span className={`value ${isCorrectChain ? 'success' : 'error'}`}>
-                {isCorrectChain ? BASE_CHAIN_NAME : `Wrong Network (${chainId})`}
-              </span>
-            </div>
-            {!isCorrectChain && (
-              <button className="switch-btn" onClick={switchToBase}>Switch to Base</button>
-            )}
           </div>
 
           {status.message && <div className={`status ${status.type}`}>{status.message}</div>}

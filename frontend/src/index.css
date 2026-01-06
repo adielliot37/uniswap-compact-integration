@@ -99,6 +99,24 @@ body {
   opacity: 0.85;
 }
 
+.connect-btn.secondary {
+  background: transparent;
+  color: #fff;
+  border: 1px solid #333;
+}
+
+.connect-btn.secondary:hover {
+  background: #1a1a1a;
+  border-color: #444;
+}
+
+.connect-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
 .main-content {
   display: flex;
   flex-direction: column;
