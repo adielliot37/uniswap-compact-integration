@@ -6,6 +6,7 @@ import './index.css'
 const COMPACT_ADDRESS = '0x00000000000000171ede64904551eeDF3C6C9788'
 const BASE_CHAIN_ID = '8453'
 const BASE_CHAIN_NAME = 'Base Mainnet'
+const API_URL = import.meta.env.VITE_API_URL || ''
 
 const BASE_NETWORK = {
   chainId: '0x2105',
@@ -244,7 +245,10 @@ function App() {
       setIsRegistering(true)
       setStatus({ type: 'info', message: 'Registering allocator with The Compact...' })
 
-      const compactAbi = ['function __registerAllocator(address allocator, bytes calldata proof) external returns (uint96 allocatorId)']
+      const compactAbi = [
+        'function __registerAllocator(address allocator, bytes calldata proof) external returns (uint96 allocatorId)',
+        'event AllocatorRegistered(uint96 indexed allocatorId, address indexed allocator)'
+      ]
       const compact = new ethers.Contract(COMPACT_ADDRESS, compactAbi, signer)
       
       const tx = await compact.__registerAllocator(allocatorAddress, '0x')
@@ -252,16 +256,44 @@ function App() {
       
       const receipt = await tx.wait()
       
-      const allocatorRegisteredTopic = ethers.id('AllocatorRegistered(uint96,address)')
-      const log = receipt.logs.find(l => l.topics[0] === allocatorRegisteredTopic)
-      
-      if (log) {
-        const allocatorIdBigInt = BigInt(log.topics[1])
-        setRegisteredAllocatorId(allocatorIdBigInt.toString())
-        setAllocatorId(allocatorIdBigInt.toString())
-        setStatus({ type: 'success', message: `Allocator registered! ID: ${allocatorIdBigInt.toString()}` })
+      if (receipt && receipt.logs) {
+        const allocatorRegisteredTopic = ethers.id('AllocatorRegistered(uint96,address)')
+        const log = receipt.logs.find(l => l && l.topics && l.topics[0] === allocatorRegisteredTopic)
+        
+        if (log && log.topics && log.topics[1]) {
+          try {
+            const allocatorIdBigInt = BigInt(log.topics[1])
+            setRegisteredAllocatorId(allocatorIdBigInt.toString())
+            setAllocatorId(allocatorIdBigInt.toString())
+            setStatus({ type: 'success', message: `Allocator registered! ID: ${allocatorIdBigInt.toString()}` })
+          } catch (parseError) {
+            setStatus({ type: 'success', message: 'Allocator registered! Check transaction logs for ID.' })
+          }
+        } else {
+          try {
+            const parsedLogs = receipt.logs.map(log => {
+              try {
+                return compact.interface.parseLog(log)
+              } catch {
+                return null
+              }
+            }).filter(Boolean)
+            
+            const allocatorEvent = parsedLogs.find(log => log && log.name === 'AllocatorRegistered')
+            if (allocatorEvent && allocatorEvent.args && allocatorEvent.args[0] !== undefined) {
+              const allocatorIdBigInt = BigInt(allocatorEvent.args[0].toString())
+              setRegisteredAllocatorId(allocatorIdBigInt.toString())
+              setAllocatorId(allocatorIdBigInt.toString())
+              setStatus({ type: 'success', message: `Allocator registered! ID: ${allocatorIdBigInt.toString()}` })
+            } else {
+              setStatus({ type: 'success', message: 'Allocator registered! Check transaction logs for ID.' })
+            }
+          } catch (parseError) {
+            setStatus({ type: 'success', message: 'Allocator registered! Check transaction logs for ID.' })
+          }
+        }
       } else {
-        setStatus({ type: 'success', message: 'Allocator registered! Check logs for ID.' })
+        setStatus({ type: 'success', message: 'Allocator registered! Check transaction logs for ID.' })
       }
     } catch (error) {
       setStatus({ type: 'error', message: `Registration failed: ${error.message}` })
@@ -271,7 +303,7 @@ function App() {
   }
 
   const constructLockTag = async () => {
-    const response = await axios.post('/api/helpers/locktag', {
+    const response = await axios.post(`${API_URL}/api/helpers/locktag`, {
       allocatorId: allocatorId || 0,
       resetPeriod: resetPeriod || 0,
       scope: scope || 1
@@ -297,7 +329,7 @@ function App() {
 
       let tx
       if (depositToken === 'native') {
-        const response = await axios.post('/api/deposit/native', { lockTag, recipient, amount })
+        const response = await axios.post(`${API_URL}/api/deposit/native`, { lockTag, recipient, amount })
         tx = await signer.sendTransaction({
           to: response.data.to,
           data: response.data.data,
@@ -314,7 +346,7 @@ function App() {
         await approveTx.wait()
         setStatus({ type: 'info', message: 'Token approved, depositing...' })
 
-        const response = await axios.post('/api/deposit/erc20', {
+        const response = await axios.post(`${API_URL}/api/deposit/erc20`, {
           token: depositTokenAddress,
           lockTag,
           amount: ethers.parseUnits(amount, 18).toString(),
@@ -355,7 +387,7 @@ function App() {
       const packed = ethers.concat([zeroLockTag, recipientAddress])
       const claimant = BigInt(packed).toString()
 
-      const response = await axios.post('/api/withdraw', {
+      const response = await axios.post(`${API_URL}/api/withdraw`, {
         allocatorData: '0x',
         nonce,
         expires,
@@ -401,7 +433,7 @@ function App() {
 
       const claimants = [{ claimant, amount: ethers.parseEther(amount).toString() }]
 
-      const response = await axios.post('/api/claim', {
+      const response = await axios.post(`${API_URL}/api/claim`, {
         allocatorData: claimAllocatorData || '0x',
         sponsorSignature: claimSponsorSignature || '0x',
         sponsor,
